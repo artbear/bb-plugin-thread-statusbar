@@ -45,6 +45,6 @@ npm run check
 
 `check` запускает тесты, TypeScript и `bb plugin build`. Тесты проверяют trace → view, Unicode и reconciliation, baseline/reset, pagination, ошибки/reconnect, поздние ответы и cleanup; официальный SDK harness проверяет native registration, UI и публичность импортов. Сборка из чистой production-установки также проверена с `npm ci --omit=dev --omit=optional --ignore-scripts` и установленным BB CLI.
 
-Проверки живого host layout, streaming, двух панелей, темы, reload и Git install проводятся отдельно при интеграции: jsdom не воспроизводит окружение BB полностью. См. [контракт](docs/specification.md), [план](docs/plan.md), [решения](docs/autonomous-decisions/thread-statusbar.md), [проверки](docs/validation.md) и [исследование](docs/research.md).
+Проверены 38 тестов и живой BB 0.48.0: потоковые ответы обоих провайдеров, две split-панели, ширина 390 px, светлая/тёмная тема, клавиатурное раскрытие, reload и отключение/включение плагина. Независимые ревью стандартов, спецификации и интеграции завершены без открытых замечаний. См. [контракт](docs/specification.md), [план](docs/plan.md), [решения](docs/autonomous-decisions/thread-statusbar.md), [проверки](docs/validation.md), [ревью](docs/review.md) и [исследование](docs/research.md).
 
 Лицензия [MIT](LICENSE), artbear.
