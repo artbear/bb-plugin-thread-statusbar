@@ -1,21 +1,7 @@
-Keep a todo list beside the work it belongs to, in the sidebar and in
-your agent threads.
+# Thread Statusbar
 
-## What you get
+Компактные метрики Codex и Cursor в штатной строке контекста открытого треда BB: модель, состояние, время хода, средняя скорость, токены, кеш и контекст. Определения доступны в раскрытии с клавиатуры; поля переносятся в узкой панели.
 
-- An **Example todos** page in the left sidebar that adds, completes, and
-  removes todos.
-- A `bb thread-statusbar` command that does the same from a terminal.
-- Live updates, so a change made in one place reaches every open page at once.
+Codex использует официальный прирост output за полное время хода с подтверждённым baseline. Cursor показывает Unicode символы в секунду без перевода в токены. Неизвестные показатели обозначаются «—», оценка контекста — «≈».
 
-## How it works
-
-The todos live in this plugin's own storage on the BB server, one list per
-installation. Nothing leaves the machine, and the plugin needs no account, API
-key, or external service.
-
-## For agents
-
-The bundled skill tells an agent to read the list with `bb thread-statusbar list`, add
-one todo at a time with `bb thread-statusbar add`, and close finished work with
-`bb thread-statusbar done`.
+Только чтение публичного SDK, без ключей, настроек, серверных служб и собственных команд. BB ≥0.48, SDK 0.6.94. [Установка и формулы](README.md).
