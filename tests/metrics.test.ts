@@ -135,3 +135,17 @@ describe('review regressions: terminal snapshots and session accounting', () => 
     expect(view([usage(1, Number.MAX_SAFE_INTEGER, 'root', 1, 0)]).total).toBeNull();
   });
 });
+
+it('does not reuse a late regressing counter as next-turn baseline, then recovers from a fresh own snapshot', () => {
+  const invalid = reduceEvents(initialMetrics('A'), [...baseline, start(4, 'root', 10000), usage(5, 160),
+    event(6, 'turn/completed', { status: 'completed' }, 'root', 20000), usage(7, 150)]);
+  const next = reduceEvents(invalid, [start(8, 'next', 30000), usage(9, 200, 'next'),
+    event(10, 'turn/completed', { status: 'completed' }, 'next', 40000)]);
+  expect(next.turn?.baseline).toBeNull();
+  expect(metricView(next, 'codex', false, 999999)).toMatchObject({ elapsed: 10, speed: null, total: 1200 });
+  const recovered = reduceEvents(next, [start(11, 'recovered', 50000), usage(12, 260, 'recovered'),
+    event(13, 'turn/completed', { status: 'completed' }, 'recovered', 60000)]);
+  expect(recovered.turn?.baseline).toBe(200);
+  expect(metricView(recovered, 'codex', false, 999999)).toMatchObject({ elapsed: 10, speed: 6, total: 1260 });
+  expect(invalid.turn?.badCounter).toBe(true);
+});

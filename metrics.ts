@@ -81,7 +81,7 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       rememberTurn(s, turnId, { root: !e.data.parentToolCallId, usage: null });
       if (e.data.parentToolCallId) continue;
       // A session snapshot alone cannot prove that its turn was a root turn.
-      const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || s.usageTurnId === s.turn.id) ? s.usage.outputTokens : null;
+      const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || (s.usageTurnId === s.turn.id && !s.turn.badCounter)) ? s.usage.outputTokens : null;
       s.turn = { id: turnId, start: e.createdAt, end: null, closed: false, model: s.pendingModel,
         baseline, output: null, badCounter: false, textComplete: true, items: new Map() };
       s.pendingModel = null;
