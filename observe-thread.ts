@@ -64,8 +64,9 @@ export function observeThread(sdk: Sdk, threadId: string, publish: (s: Observati
       if (key && key === attempted && recovered && turn) turn.recoveredOutput = recovered.outputTokens;
       state = { phase: 'ready', thread, metrics }; full = false; emit();
       if (key !== attempted) {
-        attempted = key; recovered = null;
+        attempted = null; recovered = null;
         if (recover && key && turn && thread.providerId === 'codex' && (turn.badCounter || turn.baseline === null || turn.output === null)) {
+          attempted = key;
           // A missing native file affects only speed. Epoch/abort keep late data out of a reset.
           let result: Recovered | null = null;
           let cancel: (() => void) | undefined;

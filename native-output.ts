@@ -38,14 +38,15 @@ export async function parseOutput(lines: AsyncIterable<string>, identity: Identi
   }
   return metadata && terminal && output !== null ? { sessionId: identity.sessionId, checkpointId: identity.checkpointId, outputTokens: output } : null;
 }
-async function* boundedLines(file: Awaited<ReturnType<typeof open>>, signal: AbortSignal) {
+async function* boundedLines(file: Awaited<ReturnType<typeof open>>, signal: AbortSignal, snapshotBytes: number) {
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const chunk = Buffer.alloc(64 * 1024);
   let tail = '', total = 0;
   for (;;) {
     signal.throwIfAborted();
-    const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
-    if (!bytesRead) break;
+    if (total === snapshotBytes) break;
+    const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, snapshotBytes - total), total);
+    if (!bytesRead) throw new Error('truncated');
     total += bytesRead;
     if (total > MAX_BYTES) throw new Error('limit');
     tail += decoder.decode(chunk.subarray(0, bytesRead), { stream: true });
@@ -57,8 +58,9 @@ async function* boundedLines(file: Awaited<ReturnType<typeof open>>, signal: Abo
     }
     if (Buffer.byteLength(tail) > MAX_LINE) throw new Error('limit');
   }
-  tail += decoder.decode();
-  if (tail) throw new Error('incomplete');
+  // Only newline-terminated records belong to this snapshot. An unfinished suffix
+  // cannot prove completion or reopening; the parser still requires target terminal.
+
 }
 /** Date is a bounded locator only. Metadata and every target record prove ownership. */
 export async function readNativeOutput(input: Identity & { workspace: string | null }, signal: AbortSignal, codexHome = process.env.CODEX_HOME): Promise<Recovered | null> {
@@ -102,10 +104,12 @@ export async function readNativeOutput(input: Identity & { workspace: string | n
     try {
       const before = await file.stat();
       if (!before.isFile() || before.size > MAX_BYTES || (process.getuid && before.uid !== process.getuid())) return null;
-      const result = await parseOutput(boundedLines(file, signal), input, signal);
+      const result = await parseOutput(boundedLines(file, signal, before.size), input, signal);
       const after = await file.stat();
       signal.throwIfAborted();
-      return before.size === after.size && before.mtimeMs === after.mtimeMs ? result : null;
+      // Native rollouts append records. Growth after the captured boundary does not
+      // change the completed target; truncation or an in-place rewrite is rejected.
+      return after.size >= before.size && (after.size > before.size || before.mtimeMs === after.mtimeMs) ? result : null;
     } finally { await file.close(); }
   } catch { return null; }
 }

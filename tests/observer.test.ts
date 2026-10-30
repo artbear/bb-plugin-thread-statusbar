@@ -159,3 +159,15 @@ it('resumes BB observation when a native RPC never replies and the connection re
   expect(states.at(-1)).toMatchObject({ phase: 'ready', metrics: { turn: null } });
   stop();
 });
+it.each([NaN, 800])('recovers after a valid completed turn receives late unusable own output %s', async output => {
+  const rows = [start(1, 'prior'), usage(2, 660, 'prior'), event(3, 'turn/completed', {}, 'prior'), start(4, 'root', 4000), usage(5, 900), event(6, 'turn/completed', { providerCheckpointId: '018f0000-0000-7000-8000-000000000002' }, 'root', 14000)];
+  const f = fake(rows), states: Observation[] = [];
+  const recover = vi.fn(async () => ({ sessionId: 'session', checkpointId: '018f0000-0000-7000-8000-000000000002', outputTokens: 240 }));
+  const stop = observeThread(f.sdk, 'A', s => states.push(s), recover); await settle();
+  const { metricView } = await import('../metrics');
+  expect(metricView(states.at(-1)!.metrics, 'codex', false, 999999).speed).toBe(24);
+  expect(recover).not.toHaveBeenCalled();
+  rows.push(usage(7, output)); f.changed(); await vi.advanceTimersByTimeAsync(250);
+  expect(metricView(states.at(-1)!.metrics, 'codex', false, 999999).speed).toBe(24);
+  expect(recover).toHaveBeenCalledTimes(1); stop();
+});

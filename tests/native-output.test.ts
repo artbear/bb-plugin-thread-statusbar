@@ -90,3 +90,29 @@ it('rejects missing record IDs and a reopened unfinished checkpoint', async () =
   expect(await parse([...trace(), { type: 'event_msg', payload: { type: 'task_started', turn_id: checkpointId } }])).toBeNull();
   expect(await parse([meta, record(0), terminal])).toEqual({ ...identity, outputTokens: 0 });
 });
+it('keeps the completed target when the next turn has a partial JSON tail', async () => {
+  const { root, path } = await store();
+  const newer = { type: 'event_msg', payload: { type: 'task_started', turn_id: '019d2210-0000-7000-8000-000000000009' } };
+  await writeFile(path, [...trace(), newer].map(row => JSON.stringify(row)).join('\n') + '\n{"type":');
+  expect(await readNativeOutput({ ...identity, workspace: null }, new AbortController().signal, root)).toEqual({ ...identity, outputTokens: 240 });
+});
+it('reads a bounded snapshot despite a concurrent unrelated append', async () => {
+  const fs = await import('node:fs/promises');
+  const { root, path } = await store();
+  const probe = await fs.open(path, 'r');
+  const prototype = Object.getPrototypeOf(probe);
+  const stat = prototype.stat;
+  await probe.close();
+  vi.spyOn(prototype, 'stat').mockImplementationOnce(async function (this: typeof probe) {
+    const result = await stat.call(this);
+    await fs.appendFile(path, JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: '019d2210-0000-7000-8000-000000000009' } }) + '\n{"type":');
+    return result;
+  });
+  expect(await readNativeOutput({ ...identity, workspace: null }, new AbortController().signal, root)).toEqual({ ...identity, outputTokens: 240 });
+});
+it('still rejects a completed target reopened by a full record before a partial tail', async () => {
+  const { root, path } = await store();
+  const reopened = { type: 'event_msg', payload: { type: 'task_started', turn_id: checkpointId } };
+  await writeFile(path, [...trace(), reopened].map(row => JSON.stringify(row)).join('\n') + '\n{"type":');
+  expect(await readNativeOutput({ ...identity, workspace: null }, new AbortController().signal, root)).toBeNull();
+});
