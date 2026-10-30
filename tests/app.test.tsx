@@ -6,6 +6,7 @@ import { experimental_scanPublicSdkOnly, makeThreadResponse } from '@get-bb/plug
 import type { ExperimentalThreadContextSegmentProps } from '@get-bb/plugin-sdk/app';
 import { Summary } from '../app';
 import { event, start } from './fixtures';
+import type { EventRow } from '../sdk-types';
 const props: ExperimentalThreadContextSegmentProps = { threadId: 'A', projectId: 'P', environment: null, segments: [], isExpanded: false, onToggle: vi.fn() };
 afterEach(() => vi.restoreAllMocks());
 it('registers only the native context slot and filters providers', async () => {
@@ -61,4 +62,19 @@ it('shares one observer between native visibility and summary', async () => {
   await slot.findByText('Готов');
   expect(get).toHaveBeenCalledTimes(1); expect(subscriptions).toHaveBeenCalledTimes(2);
   slot.lifecycle.unmount();
+});
+it('cold open and remount render recovered full-turn average with frozen BB duration', async () => {
+  const sessionId = '019d2210-0000-7000-8000-000000000001', checkpointId = '019d2210-0000-7000-8000-000000000002';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const rows = [start(1), event(2, 'thread/tokenUsage/updated', { tokenUsage: { total: { inputTokens: 1000, cachedInputTokens: 400, outputTokens: 900 } } }), event(3, 'turn/completed', { providerCheckpointId: checkpointId }, 'root', 11000)].map(e => ({ ...e, data: { ...e.data, providerThreadId: sessionId } } as EventRow));
+    const rpc = vi.fn(async () => ({ sessionId, checkpointId, outputTokens: 240 }));
+    const slot = renderSlot({ component: Summary }, props, { rpc: { completedOutput: rpc }, sdk: { subscribe: () => () => {}, threads: {
+      get: async () => makeThreadResponse({ id: 'A', providerId: 'codex', status: 'idle' }), context: async () => ({ usage: null }), events: { list: async () => [...rows].reverse() },
+    } } });
+    await slot.findByText('сред. 24 ток/с');
+    expect(slot.getByText('00:10')).toBeDefined();
+    expect(slot.getByText('Всего 1 900 ток')).toBeDefined();
+    expect(rpc).toHaveBeenCalledTimes(1);
+    slot.lifecycle.unmount();
+  }
 });

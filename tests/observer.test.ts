@@ -102,3 +102,60 @@ it('clears provider-owned data before reading a replacement provider', async () 
   expect(states.at(-1)).toMatchObject({ phase: 'unavailable', thread: { providerId: 'acp-cursor' }, metrics: { turn: null, usage: null } });
   stop();
 });
+
+it('restores official full-turn output after retained BB baseline was pruned, once per identity', async () => {
+  const rows = [start(1), usage(2, 900), event(3, 'turn/completed', { providerCheckpointId: '018f0000-0000-7000-8000-000000000002' }, 'root', 11000)];
+  const f = fake(rows), states: Observation[] = [];
+  const recover = vi.fn(async () => ({ sessionId: 'session', checkpointId: '018f0000-0000-7000-8000-000000000002', outputTokens: 240 }));
+  const stop = observeThread(f.sdk, 'A', s => states.push(s), recover);
+  await settle();
+  const { metricView } = await import('../metrics');
+  expect(metricView(states.at(-1)!.metrics, 'codex', false, 999999).speed).toBe(24);
+  f.changed(); await vi.advanceTimersByTimeAsync(250);
+  expect(recover).toHaveBeenCalledTimes(1);
+  stop();
+});
+
+it.each(['next', 'clear', 'identity', 'disconnect', 'stop'])('discards late native evidence after %s', async action => {
+  const rows = [start(1), usage(2, 900), event(3, 'turn/completed', { providerCheckpointId: '018f0000-0000-7000-8000-000000000002' }, 'root', 11000)];
+  const f = fake(rows), states: Observation[] = [];
+  let finish!: (value: { sessionId: string; checkpointId: string; outputTokens: number }) => void;
+  const recover = vi.fn(() => new Promise<{ sessionId: string; checkpointId: string; outputTokens: number }>(resolve => { finish = resolve; }));
+  const stop = observeThread(f.sdk, 'A', s => states.push(s), recover); await settle();
+  if (action === 'next') { rows.push(start(4, 'next')); f.changed(); }
+  if (action === 'clear') { rows.push(event(4, 'thread/context/cleared', {}, null)); f.rewritten(); }
+  if (action === 'identity') { rows.push(event(4, 'thread/identity', { providerThreadId: 'replacement' }, null)); f.changed(); }
+  if (action === 'disconnect') f.connection('disconnected');
+  if (action === 'stop') stop();
+  finish({ sessionId: 'session', checkpointId: '018f0000-0000-7000-8000-000000000002', outputTokens: 240 });
+  await settle(); await vi.advanceTimersByTimeAsync(250);
+  expect(states.every(s => s.metrics.turn?.recoveredOutput == null)).toBe(true);
+  stop();
+});
+it('native absence preserves total/cache and never invents a speed', async () => {
+  const f = fake([start(1), usage(2, 900), event(3, 'turn/completed', { providerCheckpointId: '018f0000-0000-7000-8000-000000000002' })]);
+  const states: Observation[] = [], recover = vi.fn(async () => null);
+  const stop = observeThread(f.sdk, 'A', s => states.push(s), recover); await settle();
+  const { metricView } = await import('../metrics');
+  expect(metricView(states.at(-1)!.metrics, 'codex', false, 999999)).toMatchObject({ speed: null, total: 1900, cache: 40 });
+  f.changed(); await vi.advanceTimersByTimeAsync(250); expect(recover).toHaveBeenCalledTimes(1); stop();
+});
+it.each(['warm', 'cold', 'reload'])('uses the same golden full-turn rate for %s history', async mode => {
+  const tail = [start(4, 'root', 4000), usage(5, 900), event(6, 'turn/completed', { providerCheckpointId: '018f0000-0000-7000-8000-000000000002' }, 'root', 14000)];
+  const rows = mode === 'warm' ? [start(1, 'prior'), usage(2, 660, 'prior'), event(3, 'turn/completed', {}, 'prior'), ...tail] : tail;
+  const f = fake(rows), states: Observation[] = [];
+  const recover = vi.fn(async () => ({ sessionId: 'session', checkpointId: '018f0000-0000-7000-8000-000000000002', outputTokens: 240 }));
+  const stop = observeThread(f.sdk, 'A', s => states.push(s), recover); await settle();
+  const { metricView } = await import('../metrics');
+  expect(metricView(states.at(-1)!.metrics, 'codex', false, 999999).speed).toBe(24);
+  expect(recover).toHaveBeenCalledTimes(mode === 'warm' ? 0 : 1); stop();
+});
+it('resumes BB observation when a native RPC never replies and the connection resets', async () => {
+  const f = fake([start(1), usage(2, 900), event(3, 'turn/completed', { providerCheckpointId: '018f0000-0000-7000-8000-000000000002' })]);
+  const states: Observation[] = [], recover = vi.fn(() => new Promise<null>(() => {}));
+  const stop = observeThread(f.sdk, 'A', s => states.push(s), recover); await settle();
+  f.connection('disconnected'); await settle(); f.list.mockResolvedValueOnce([]);
+  f.connection('connected'); await vi.advanceTimersByTimeAsync(250);
+  expect(states.at(-1)).toMatchObject({ phase: 'ready', metrics: { turn: null } });
+  stop();
+});

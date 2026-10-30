@@ -17,3 +17,9 @@ Cursor ACP пока не гарантирует token counters. Вместо к�
 ## Организация и публикация
 
 Пользователь прямо поручил параллельные сабтреды, независимую рецензию и публичный GitHub repository. Исследования разделены, реализация изолирована worktree, review запускается свежим thread без fork истории. Отсутствующие to-spec/to-tickets/implement заменены их контрактами из autonomous-development; план/спецификация/тикеты сохранены локально. Marketplace не поручен и не входит в выпуск.
+
+## 0.1.1: завершённые ходы после pruning
+
+Диагностика установила потерю старых BB usage и baseline при сохранении единственного итогового снимка. Увеличение event replay не восстанавливает удалённый baseline. Пользователь расширил v1 восстановлением уже завершённых Codex ходов. Выбран один точечный read-only host reader: подтверждённые BB session/checkpoint и execution environment определяет server, host проверяет native metadata и берёт последний официальный turn_token_usage.output_tokens перед terminal. Знаменатель BB сохранён. Native JSONL — внутренний условный источник; при недоступности остаётся «—».
+
+Root helper imports позволяют оставить exact SDK в devDependencies; runtime schema Zod включена в dependencies. Новый API принадлежит плагину и не является agent tool или CLI. Файл ограничен 32 MiB/2 MiB на строку, каталоги — 10 000 имён каждый, поиск — UUIDv7 date ±1 сутки и архив. Metadata и владелец файла проверяются независимо от локатора. В wire output только UUID и output; приватный текст и пути не покидают host. Коллектор, новые app-server процессы и legacy token_count fallback не добавлены.

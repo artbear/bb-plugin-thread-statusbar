@@ -5,6 +5,7 @@ type TurnRecord = { root: boolean | null; usage: Usage | null };
 type TextItem = { count: number; complete: boolean; started: boolean; tail: string };
 export type Turn = {
   id: string; start: number; end: number | null; closed: boolean; model: string | null;
+  checkpointId: string | null; recoveredOutput: number | null;
   baseline: number | null; output: number | null; badCounter: boolean; textComplete: boolean;
   items: Map<string, TextItem>;
 };
@@ -83,11 +84,16 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       // A session snapshot alone cannot prove that its turn was a root turn.
       const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || (s.usageTurnId === s.turn.id && !s.turn.badCounter)) ? s.usage.outputTokens : null;
       s.turn = { id: turnId, start: e.createdAt, end: null, closed: false, model: s.pendingModel,
-        baseline, output: null, badCounter: false, textComplete: true, items: new Map() };
+        checkpointId: null, recoveredOutput: null, baseline, output: null, badCounter: false, textComplete: true, items: new Map() };
       s.pendingModel = null;
       continue;
     }
     const t = s.turn;
+    if (t && turnId === t.id && e.type === 'turn/completed') {
+      const checkpoint = e.data.providerCheckpointId ?? null;
+      if (t.checkpointId !== checkpoint) t.recoveredOutput = null;
+      t.checkpointId = checkpoint;
+    }
     const owns = t != null && turnId === t.id;
     if (e.type === 'thread/contextWindowUsage/updated' && (turnId === null || owns)) {
       const c = e.data.contextWindowUsage;
@@ -147,6 +153,7 @@ export function metricView(s: Metrics, provider: string, active: boolean, now: n
   const elapsed = seconds != null && Number.isFinite(seconds) ? seconds : null;
   let numerator: number | null = null;
   if (t && provider === 'codex' && !t.badCounter && t.baseline != null && t.output != null && t.output >= t.baseline) numerator = t.output - t.baseline;
+  if (t?.closed && provider === 'codex' && numerator === null && t.recoveredOutput != null) numerator = t.recoveredOutput;
   if (t && provider === 'acp-cursor' && t.textComplete && [...t.items.values()].every(i => i.complete || i.started)) {
     numerator = [...t.items.values()].reduce((n, i) => n + i.count + (i.tail ? 1 : 0), 0);
   }

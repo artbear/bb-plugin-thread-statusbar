@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-thread-statusbar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "bb": ">=0.48",
@@ -13,7 +13,8 @@
       "icon": "Gauge"
     },
     "server": "./server.ts",
-    "app": "./app.tsx"
+    "app": "./app.tsx",
+    "host": "./host.ts"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.6.94",
@@ -39,5 +40,8 @@
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build",
     "check": "npm run test && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
   }
 }

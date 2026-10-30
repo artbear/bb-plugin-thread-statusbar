@@ -1,5 +1,6 @@
+import type { recoveryContract } from './recovery-contract';
 import { useCallback, useSyncExternalStore } from 'react';
-import { useSdk } from '@get-bb/plugin-sdk/app';
+import { useRpc, useSdk } from '@get-bb/plugin-sdk/app';
 import { initialMetrics } from './metrics';
 import { observeThread, type Observation } from './observe-thread';
 import type { Sdk } from './sdk-types';
@@ -7,6 +8,7 @@ type Store = { state: Observation; listeners: Set<() => void>; stop?: () => void
 const stores = new WeakMap<Sdk, Map<string, Store>>();
 export function useThreadStatus(threadId: string): Observation {
   const sdk = useSdk();
+  const rpc = useRpc<typeof recoveryContract>();
   let byThread = stores.get(sdk);
   if (!byThread) { byThread = new Map(); stores.set(sdk, byThread); }
   let store = byThread.get(threadId);
@@ -17,7 +19,7 @@ export function useThreadStatus(threadId: string): Observation {
   const current = store;
   const subscribe = useCallback((listener: () => void) => {
     current.listeners.add(listener);
-    if (!current.stop) current.stop = observeThread(sdk, threadId, state => { current.state = state; for (const notify of current.listeners) notify(); });
+    if (!current.stop) current.stop = observeThread(sdk, threadId, state => { current.state = state; for (const notify of current.listeners) notify(); }, input => rpc.call('completedOutput', input));
     return () => {
       current.listeners.delete(listener);
       if (!current.listeners.size) { current.stop?.(); current.stop = undefined; queueMicrotask(() => {
@@ -25,6 +27,6 @@ export function useThreadStatus(threadId: string): Observation {
         if (!current.listeners.size && entries?.get(threadId) === current) entries.delete(threadId);
       }); }
     };
-  }, [sdk, threadId, current]);
+  }, [sdk, threadId, current, rpc]);
   return useSyncExternalStore(subscribe, () => current.state);
 }

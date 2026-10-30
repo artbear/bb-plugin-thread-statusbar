@@ -37,3 +37,11 @@ Session usage ведётся отдельно от выбранного root tur
 Недостоверный поздний snapshot также исключён из baseline следующего хода. Regression trace 160 → late150 → новый ход200 не даёт ложные 5 ток/с; следующий достоверный baseline200 → 260 за10s восстанавливает 6 ток/с. Финальный `npm run check` повторён после интеграции: все 38 тестов, strict typecheck и build прошли.
 
 Независимые проверки описаны в [отчёте ревью](review.md). Новых runtime imports и зависимостей при исправлении не добавлено; сборка без dev dependencies проверяет контракт Git-установки. В исходниках проверено отсутствие секретов, локальных auth/transcript данных и частных машинных путей.
+
+## 0.1.1: fixture-проверка восстановления завершённых Codex ходов
+
+Регрессия сначала воспроизведена на observer seam: один retained BB usage без baseline и закрытый ход давали `speed=null` вместо golden `24 ток/с`. После внедрения own RPC/host reader тесты проверяют одинаковый full-turn rate для warm/cold/reload, UI rerender и frozen duration, отсутствие повторного native чтения на неизменившейся invalidation, late reply после next/clear/session/disconnect/dispose и восстановление BB observation при неответившем native RPC.
+
+Parser/file fixtures полностью вымышлены: последний aggregate нескольких responses, метаданные и session/root/checkpoint/terminal, invalid/unsafe/regressing counters, нулевой output, повреждённый/неполный/oversized файл, архив и соседняя дата, неоднозначность и symlink/ownership, отмена. SDK backend/host/app harness проверяют load-safe factory, server routing на environment host, строгий вход только threadId/turnId, неподдержанный provider и незакрытый/чужой turn, public SDK imports.
+
+`npm run check` включает эти проверки, TypeScript и app/server/host build. Чистая копия с `npm ci --omit=dev --omit=optional --cache /tmp/statusbar-npm-cache --ignore-scripts` также собирает все три артефакта. Live установка, исходный приватный reproducer и независимое ревью текущего дополнения выполняются интегратором отдельно; fixture-прогон не подменяет их.
