@@ -49,7 +49,7 @@ describe('bounded SDK observation', () => {
     const f = fake(rows), states: Observation[] = [];
     const stop = observeThread(f.sdk, 'A', s => states.push(s)); await settle();
     expect(f.list).toHaveBeenCalledTimes(20);
-    expect(states.at(-1)).toMatchObject({ phase: 'ready', metrics: { turn: null, usage: null } });
+    expect(states.at(-1)).toMatchObject({ phase: 'ready', metrics: { turn: null, usage: { inputTokens: 1000, outputTokens: HISTORY_LIMIT + 10, cachedInputTokens: 400 } } });
     stop();
   });
   it('marks failed reads unavailable, rereads on reconnect and clears after rewrite', async () => {

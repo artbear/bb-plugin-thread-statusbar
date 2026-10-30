@@ -67,11 +67,71 @@ it('records execution model and fallback without renaming for the next request',
 
 it('deduplicates ids even across pages and excludes nested token/context resets', () => {
   const a = event(5, 'item/agentMessage/delta', { itemId: 'm', delta: 'A' });
-  const s = reduceEvents(initialMetrics('A'), [start(1), event(2, 'item/started', { item: { type: 'agentMessage', id: 'm', text: '' } }), a, { ...a, seq: 6 }, event(7, 'thread/context/cleared', {}, 'nested'), usage(8, 999, 'nested'), event(9, 'turn/completed', { status: 'completed' }, 'root', 3000)]);
+  const s = reduceEvents(initialMetrics('A'), [start(1), event(2, 'item/started', { item: { type: 'agentMessage', id: 'm', text: '' } }), event(3, 'turn/started', { parentToolCallId: 'tool' }, 'nested'), a, { ...a, seq: 6 }, event(7, 'thread/context/cleared', {}, 'nested'), usage(8, 999, 'nested'), event(9, 'turn/completed', { status: 'completed' }, 'root', 3000)]);
   expect(metricView(s, 'acp-cursor', false, 90000)).toMatchObject({ speed: 0.5, total: null });
 });
 
 it('binds recorded execution by accepted request across creation of a provider session', () => {
   const rows = [event(1, 'client/turn/requested', { requestId: 'r1', target: { kind: 'thread-start' }, execution: { model: 'actual' } }, null), event(2, 'thread/identity', {}, null), start(3), event(4, 'turn/input/accepted', { clientRequestId: 'r1' })];
   expect(view(rows).model).toBe('actual');
+});
+
+describe('review regressions: terminal snapshots and session accounting', () => {
+  const complete = (seq: number) => event(seq, 'turn/completed', { status: 'completed' }, 'root', 20000);
+  it('accepts late own usage with or without an intermediate snapshot, freezing duration', () => {
+    for (const middle of [[], [usage(5, 130)]]) {
+      const state = reduceEvents(initialMetrics('A'), [...baseline, start(4, 'root', 10000), ...middle, complete(6)]);
+      const refined = reduceEvents(state, [usage(7, 160)]);
+      expect(metricView(refined, 'codex', true, 999999)).toMatchObject({ elapsed: 10, speed: 6, total: 1160, cache: 40 });
+      expect(reduceEvents(refined, [usage(7, 160)])).toEqual(refined);
+      expect(metricView(state, 'codex', true, 999999).speed).toBe(middle.length ? 3 : null);
+    }
+  });
+  it.each([-1, 150, 1e308, 160.5])('invalidates late invalid/regressing output %s after completion', output => {
+    const state = reduceEvents(initialMetrics('A'), [...baseline, start(4, 'root', 10000), usage(5, 160), complete(6), usage(7, output)]);
+    expect(metricView(state, 'codex', true, 999999)).toMatchObject({ elapsed: 10, speed: null });
+    if (output !== 150) expect(state.usage).toBeNull();
+  });
+  it('invalidates ambiguous baseline on changed prior counters without using foreign output', () => {
+    const before = reduceEvents(initialMetrics('A'), [...baseline, start(4, 'root', 10000)]);
+    const late = reduceEvents(before, [usage(5, 160, 'prior')]);
+    expect(late.turn?.output).toBeNull();
+    expect(metricView(late, 'codex', true, 15000)).toMatchObject({ speed: null, total: 1160 });
+    const final = reduceEvents(late, [usage(6, 220), complete(7)]);
+    expect(metricView(final, 'codex', false, 999999)).toMatchObject({ elapsed: 10, speed: null, total: 1220 });
+  });
+  it('ignores unchanged late prior snapshots and excludes known nested/foreign sessions', () => {
+    const rows = [...baseline, start(4, 'root', 10000), usage(5, 160), usage(6, 100, 'prior'),
+      event(7, 'turn/started', { parentToolCallId: 'tool' }, 'child'), usage(8, 999, 'child'),
+      event(9, 'thread/tokenUsage/updated', { ...usage(9, 888).data, providerThreadId: 'foreign' }), complete(10)];
+    expect(view(rows)).toMatchObject({ elapsed: 10, speed: 6, total: 1160 });
+  });
+  it('keeps session totals/cache without a start but does not invent a root baseline', () => {
+    expect(view([usage(1, 200)])).toMatchObject({ elapsed: null, speed: null, total: 1200, cache: 40 });
+    for (const turn of ['root', 'pruned']) expect(view([usage(1, 200, turn), start(2), usage(3, 260)], 'codex', true, 12000).speed).toBeNull();
+    expect(view([event(1, 'thread/identity', {}, null), usage(2, 200)])).toMatchObject({ total: 1200, cache: 40, elapsed: null });
+  });
+  it('keeps snapshot-only totals scoped to the observed thread/session', () => {
+    const rows = [event(1, 'thread/identity', {}, null), usage(2, 200),
+      event(3, 'thread/tokenUsage/updated', { ...usage(3, 999).data, providerThreadId: 'foreign' }),
+      { ...usage(4, 888), threadId: 'B' }];
+    expect(view(rows)).toMatchObject({ total: 1200, cache: 40, speed: null });
+    expect(view([event(1, 'turn/started', { parentToolCallId: 'tool' }, 'child'), usage(2, 999, 'child')]).total).toBeNull();
+  });
+  it('reconciles a late completed Cursor snapshot at the frozen terminal time', () => {
+    const before = reduceEvents(initialMetrics('A'), [start(1), event(2, 'item/started', { item: { type: 'agentMessage', id: 'm', text: '' } }), event(3, 'turn/completed', { status: 'completed' }, 'root', 3000)]);
+    const snapshot = event(4, 'item/completed', { item: { type: 'agentMessage', id: 'm', text: 'А🙂Б' } });
+    const after = reduceEvents(before, [snapshot, { ...snapshot, id: 'duplicate', seq: 5 }]);
+    expect(metricView(after, 'acp-cursor', true, 999999)).toMatchObject({ elapsed: 2, speed: 1.5 });
+    expect(metricView(before, 'acp-cursor', true, 999999).speed).toBe(0);
+  });
+  it('rejects unsafe/non-integer JSON counters and never emits nonfinite derived values', () => {
+    for (const output of [1e308, Number.MAX_SAFE_INTEGER + 1, 1.5]) {
+      expect(view([start(1, 'prior'), usage(2, 0, 'prior'), start(3, 'root', 10000), usage(4, output), event(5, 'turn/completed', {}, 'root', 10001)])).toMatchObject({ speed: null, total: null });
+    }
+    const rows = [start(1, 'prior'), usage(2, 0, 'prior'), start(3, 'root', 0), usage(4, 200), event(5, 'turn/completed', {}, 'root', 1e-310)];
+    expect(view(rows).speed).toBeNull();
+    expect(Object.values(view(rows)).filter(v => typeof v === 'number').every(Number.isFinite)).toBe(true);
+    expect(view([usage(1, Number.MAX_SAFE_INTEGER, 'root', 1, 0)]).total).toBeNull();
+  });
 });

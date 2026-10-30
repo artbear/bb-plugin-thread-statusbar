@@ -1,6 +1,7 @@
 import type { Context, EventRow } from './sdk-types';
 
 export type Usage = { inputTokens: number; outputTokens: number; cachedInputTokens: number };
+type TurnRecord = { root: boolean | null; usage: Usage | null };
 type TextItem = { count: number; complete: boolean; started: boolean; tail: string };
 export type Turn = {
   id: string; start: number; end: number | null; closed: boolean; model: string | null;
@@ -9,13 +10,26 @@ export type Turn = {
 };
 export type Metrics = {
   threadId: string; seq: number; session: string | null; usage: Usage | null;
+  usageTurnId: string | null; turns: Map<string, TurnRecord>;
   context: Context; turn: Turn | null; pendingModel: string | null; seenIds: Set<string>; requests: Map<string, string>;
 };
-export const initialMetrics = (threadId: string): Metrics => ({ threadId, seq: -1, session: null, usage: null, context: null, turn: null, pendingModel: null, seenIds: new Set(), requests: new Map() });
+export const initialMetrics = (threadId: string): Metrics => ({ threadId, seq: -1, session: null, usage: null, usageTurnId: null, turns: new Map(), context: null, turn: null, pendingModel: null, seenIds: new Set(), requests: new Map() });
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
-export function validUsage(u: Usage): boolean {
-  return nonnegative(u.inputTokens) && nonnegative(u.outputTokens) && nonnegative(u.cachedInputTokens) && u.cachedInputTokens <= u.inputTokens && Number.isFinite(u.inputTokens + u.outputTokens);
+const counter = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+/** Validate JSON counters at the SDK boundary; retain only fields used by our formulas. */
+export function parseUsage(value: unknown): Usage | null {
+  if (value == null || typeof value !== 'object') return null;
+  const u = value as Partial<Usage>;
+  if (!counter(u.inputTokens) || !counter(u.outputTokens) || !counter(u.cachedInputTokens) || u.cachedInputTokens > u.inputTokens || !Number.isSafeInteger(u.inputTokens + u.outputTokens)) return null;
+  return { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cachedInputTokens: u.cachedInputTokens };
 }
+const equalUsage = (a: Usage | null, b: Usage | null) => a != null && b != null && a.inputTokens === b.inputTokens && a.outputTokens === b.outputTokens && a.cachedInputTokens === b.cachedInputTokens;
+const regresses = (a: Usage, b: Usage) => b.inputTokens < a.inputTokens || b.outputTokens < a.outputTokens || b.cachedInputTokens < a.cachedInputTokens;
+function rememberTurn(s: Metrics, id: string, record: TurnRecord) {
+  s.turns.set(id, record);
+  if (s.turns.size > 2000) s.turns.delete(s.turns.keys().next().value!);
+}
+
 export function validContext(c: Context): Context {
   return c && nonnegative(c.usedTokens) && nonnegative(c.modelContextWindow) && c.modelContextWindow > 0 ? c : null;
 }
@@ -31,7 +45,7 @@ function appendText(item: TextItem, delta: string): TextItem {
 }
 /** Deterministic reduction. Only accepted root turns establish metric ownership. */
 export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metrics {
-  const s: Metrics = { ...previous, seenIds: new Set(previous.seenIds), requests: new Map(previous.requests), turn: previous.turn && { ...previous.turn, items: new Map(previous.turn.items) } };
+  const s: Metrics = { ...previous, seenIds: new Set(previous.seenIds), requests: new Map(previous.requests), turns: new Map(previous.turns), turn: previous.turn && { ...previous.turn, items: new Map(previous.turn.items) } };
   for (const e of [...rows].sort((a, b) => a.seq - b.seq)) {
     if (e.threadId !== s.threadId || !Number.isFinite(e.seq) || e.seq <= s.seq) continue;
     s.seq = e.seq;
@@ -55,7 +69,7 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       if (e.data.target.kind !== 'steer') s.pendingModel = e.data.execution.model ?? null;
       continue;
     }
-    if ('providerThreadId' in d && d.providerThreadId != null) {
+    if ('providerThreadId' in d && d.providerThreadId) {
       if (s.session === null) s.session = d.providerThreadId;
       if (d.providerThreadId !== s.session) continue;
     }
@@ -63,9 +77,13 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       if (!s.turn || turnId === null || turnId === s.turn.id) clear(s);
       continue;
     }
-    if (e.type === 'turn/started' && turnId && !e.data.parentToolCallId) {
+    if (e.type === 'turn/started' && turnId) {
+      rememberTurn(s, turnId, { root: !e.data.parentToolCallId, usage: null });
+      if (e.data.parentToolCallId) continue;
+      // A session snapshot alone cannot prove that its turn was a root turn.
+      const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || s.usageTurnId === s.turn.id) ? s.usage.outputTokens : null;
       s.turn = { id: turnId, start: e.createdAt, end: null, closed: false, model: s.pendingModel,
-        baseline: s.usage?.outputTokens ?? null, output: null, badCounter: false, textComplete: true, items: new Map() };
+        baseline, output: null, badCounter: false, textComplete: true, items: new Map() };
       s.pendingModel = null;
       continue;
     }
@@ -76,17 +94,27 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       s.context = c.usedTokens != null && c.modelContextWindow != null ? validContext({ ...c, usedTokens: c.usedTokens, modelContextWindow: c.modelContextWindow }) : null;
     }
     if (e.type === 'system/thread/interrupted' && t && !t.closed) { t.end = e.createdAt; t.closed = true; }
-    if (!t || !owns) continue;
-    if (e.type === 'thread/tokenUsage/updated') {
-      const u = e.data.tokenUsage.total;
-      if (!validUsage(u)) { s.usage = null; if (!t.closed) t.badCounter = true; continue; }
-      if (!t.closed) {
-        if (s.usage && (u.outputTokens < s.usage.outputTokens || u.inputTokens < s.usage.inputTokens || u.cachedInputTokens < s.usage.cachedInputTokens)) t.badCounter = true;
-        t.output = u.outputTokens;
+    if (e.type === 'thread/tokenUsage/updated' && turnId) {
+      const record = s.turns.get(turnId);
+      if (!e.data.providerThreadId || record?.root === false) continue;
+      const u = parseUsage(e.data.tokenUsage?.total);
+      // A repeated prior-turn snapshot is not a new measurement of the current session.
+      if (!owns && equalUsage(record?.usage ?? null, u)) continue;
+      if (t) {
+        if (!owns) t.badCounter = true; // late changed counters make its pre-turn baseline ambiguous
+        else {
+          if (!u || (s.usage && regresses(s.usage, u)) || (record?.usage && regresses(record.usage, u))) t.badCounter = true;
+          t.output = u?.outputTokens ?? null;
+        }
       }
+      rememberTurn(s, turnId, { root: record?.root ?? null, usage: u });
       s.usage = u;
+      s.usageTurnId = turnId;
+      continue;
     }
-    if (t.closed) continue;
+    if (!t || !owns) continue;
+    // Terminal time stays frozen, but authoritative complete text may arrive later.
+    if (t.closed && e.type !== 'item/completed') continue;
     if (e.type === 'turn/input/accepted') t.model = s.requests.get(e.data.clientRequestId) ?? t.model;
     if (e.type === 'provider/modelFallback') t.model = e.data.fallbackModel;
     if (e.type === 'turn/completed' || (e.type === 'provider/error' && !e.data.willRetry) || e.type === 'system/error') {
@@ -115,13 +143,15 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
 export function metricView(s: Metrics, provider: string, active: boolean, now: number) {
   const t = s.turn;
   const end = t?.closed ? t.end : active ? now : null;
-  const elapsed = t && end != null && Number.isFinite(t.start) && end >= t.start ? (end - t.start) / 1000 : null;
+  const seconds = t && end != null && Number.isFinite(t.start) && end >= t.start ? (end - t.start) / 1000 : null;
+  const elapsed = seconds != null && Number.isFinite(seconds) ? seconds : null;
   let numerator: number | null = null;
   if (t && provider === 'codex' && !t.badCounter && t.baseline != null && t.output != null && t.output >= t.baseline) numerator = t.output - t.baseline;
   if (t && provider === 'acp-cursor' && t.textComplete && [...t.items.values()].every(i => i.complete || i.started)) {
     numerator = [...t.items.values()].reduce((n, i) => n + i.count + (i.tail ? 1 : 0), 0);
   }
-  return { elapsed, speed: elapsed != null && elapsed > 0 && numerator != null ? numerator / elapsed : null,
+  const speed = elapsed != null && elapsed > 0 && numerator != null ? numerator / elapsed : null;
+  return { elapsed, speed: speed != null && Number.isFinite(speed) ? speed : null,
     total: s.usage ? s.usage.inputTokens + s.usage.outputTokens : null,
     cache: s.usage && s.usage.inputTokens > 0 ? s.usage.cachedInputTokens / s.usage.inputTokens * 100 : null,
     context: validContext(s.context), model: t?.model ?? null };
