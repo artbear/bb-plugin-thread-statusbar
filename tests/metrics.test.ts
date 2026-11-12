@@ -160,6 +160,16 @@ it('never estimates Hermes output from visible characters without usage or basel
   expect(view([start(1), usage(2, 160), event(3, 'turn/completed', {}, 'root', 3000)], 'acp-hermes-agent').speed).toBeNull();
   expect(view(rows, 'acp-cursor')).toMatchObject({ speed: 1.5, speedUnit: 'симв/с' });
 });
+it('counts the first Cursor snapshot as turn speed and leaves Codex and Hermes unchanged', () => {
+  const rows = [start(1), usage(2, 160), event(3, 'turn/completed', {}, 'root', 3000)];
+  expect(view(rows, 'acp-cursor')).toMatchObject({ elapsed: 2, speed: 80, speedUnit: 'ток/с', total: 1160 });
+  expect(view(rows, 'codex').speed).toBeNull();
+  expect(view(rows, 'acp-hermes-agent').speed).toBeNull();
+  const total = { inputTokens: 1000, outputTokens: 160, cachedInputTokens: 400, reasoningOutputTokens: 0, totalTokens: 1160 };
+  const last = { ...total, outputTokens: 20, totalTokens: 1020 };
+  const partial = event(2, 'thread/tokenUsage/updated', { tokenUsage: { total, last, modelContextWindow: null } });
+  expect(view([start(1), partial, event(3, 'turn/completed', {}, 'root', 3000)], 'acp-cursor')).toMatchObject({ speed: null, speedUnit: 'ток/с' });
+});
 function hermesUsage(seq: number, output: number, lastOutput: number, turn = 'root', time = seq * 1000) {
   const total = { inputTokens: 1000, outputTokens: output, cachedInputTokens: 400, reasoningOutputTokens: 0, totalTokens: 1000 + output };
   const last = { inputTokens: 10, outputTokens: lastOutput, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 10 + lastOutput };

@@ -7,7 +7,7 @@ type TextItem = { count: number; complete: boolean; started: boolean; tail: stri
 export type Turn = {
   id: string; start: number; end: number | null; closed: boolean; model: string | null; reasoningLevel: string | null; serviceTier: string | null;
   checkpointId: string | null; recoveredOutput: number | null;
-  baseline: number | null; output: number | null; turnDelta: number | null; sessionRestarted: boolean; badCounter: boolean; textComplete: boolean;
+  baseline: number | null; output: number | null; lastOutput: number | null; turnDelta: number | null; sessionRestarted: boolean; badCounter: boolean; textComplete: boolean;
   items: Map<string, TextItem>;
 };
 export type Metrics = {
@@ -86,7 +86,7 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       // A session snapshot alone cannot prove that its turn was a root turn.
       const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || (s.usageTurnId === s.turn.id && (!s.turn.badCounter || s.turn.sessionRestarted))) ? s.usage.outputTokens : null;
       s.turn = { id: turnId, start: e.createdAt, end: null, closed: false, model: s.pendingExecution?.model ?? null, reasoningLevel: s.pendingExecution?.reasoningLevel ?? null, serviceTier: s.pendingExecution?.serviceTier ?? null,
-        checkpointId: null, recoveredOutput: null, baseline, output: null, turnDelta: null, sessionRestarted: false, badCounter: false, textComplete: true, items: new Map() };
+        checkpointId: null, recoveredOutput: null, baseline, output: null, lastOutput: null, turnDelta: null, sessionRestarted: false, badCounter: false, textComplete: true, items: new Map() };
       s.pendingExecution = null;
       continue;
     }
@@ -117,6 +117,7 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
           const sessionRegress = Boolean(s.usage && u && regresses(s.usage, u));
           if (!u || sameTurnRegress || sessionRegress) t.badCounter = true;
           t.output = u?.outputTokens ?? null;
+          t.lastOutput = last?.outputTokens ?? null;
           // Hermes last is the bridge delta. A resume baseline is not emitted, so the total gap includes another turn.
           const turnDelta = u && last && last.outputTokens < u.outputTokens && !sameTurnRegress ? last.outputTokens : null;
           if (!u || sameTurnRegress) t.turnDelta = null;
@@ -168,7 +169,8 @@ export function metricView(s: Metrics, provider: string, active: boolean, now: n
   const seconds = t && end != null && Number.isFinite(t.start) && end >= t.start ? (end - t.start) / 1000 : null;
   const elapsed = seconds != null && Number.isFinite(seconds) ? seconds : null;
   let numerator: number | null = null;
-  if (provider === 'acp-hermes-agent' && t && t.turnDelta != null && (!t.badCounter || t.sessionRestarted)) numerator = t.turnDelta;
+  if (provider === 'acp-cursor' && t && !t.badCounter && t.baseline == null && t.output != null && t.lastOutput === t.output) numerator = t.output;
+  else if (provider === 'acp-hermes-agent' && t && t.turnDelta != null && (!t.badCounter || t.sessionRestarted)) numerator = t.turnDelta;
   else if (t && !t.badCounter && t.baseline != null && t.output != null && t.output >= t.baseline) numerator = t.output - t.baseline;
   if (t?.closed && provider === 'codex' && numerator === null && t.recoveredOutput != null) numerator = t.recoveredOutput;
   const speedUnit = provider === 'acp-cursor' && s.usage === null ? 'симв/с' : 'ток/с';
