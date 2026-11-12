@@ -1,20 +1,21 @@
 import type { Context, EventRow } from './sdk-types';
 
 export type Usage = { inputTokens: number; outputTokens: number; cachedInputTokens: number };
+type Execution = { model: string | null; reasoningLevel: string | null; serviceTier: string | null };
 type TurnRecord = { root: boolean | null; usage: Usage | null };
 type TextItem = { count: number; complete: boolean; started: boolean; tail: string };
 export type Turn = {
-  id: string; start: number; end: number | null; closed: boolean; model: string | null;
+  id: string; start: number; end: number | null; closed: boolean; model: string | null; reasoningLevel: string | null; serviceTier: string | null;
   checkpointId: string | null; recoveredOutput: number | null;
-  baseline: number | null; output: number | null; badCounter: boolean; textComplete: boolean;
+  baseline: number | null; output: number | null; turnDelta: number | null; sessionRestarted: boolean; badCounter: boolean; textComplete: boolean;
   items: Map<string, TextItem>;
 };
 export type Metrics = {
   threadId: string; seq: number; session: string | null; usage: Usage | null;
   usageTurnId: string | null; turns: Map<string, TurnRecord>;
-  context: Context; turn: Turn | null; pendingModel: string | null; seenIds: Set<string>; requests: Map<string, string>;
+  context: Context; turn: Turn | null; pendingExecution: Execution | null; seenIds: Set<string>; requests: Map<string, Execution>;
 };
-export const initialMetrics = (threadId: string): Metrics => ({ threadId, seq: -1, session: null, usage: null, usageTurnId: null, turns: new Map(), context: null, turn: null, pendingModel: null, seenIds: new Set(), requests: new Map() });
+export const initialMetrics = (threadId: string): Metrics => ({ threadId, seq: -1, session: null, usage: null, usageTurnId: null, turns: new Map(), context: null, turn: null, pendingExecution: null, seenIds: new Set(), requests: new Map() });
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const counter = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
 /** Validate JSON counters at the SDK boundary; retain only fields used by our formulas. */
@@ -65,9 +66,10 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       continue;
     }
     if (e.type === 'client/turn/requested') {
-      s.requests.set(e.data.requestId, e.data.execution.model);
+      const execution: Execution = { model: e.data.execution.model ?? null, reasoningLevel: e.data.execution.reasoningLevel ?? null, serviceTier: e.data.execution.serviceTier ?? null };
+      s.requests.set(e.data.requestId, execution);
       if (s.requests.size > 32) s.requests.delete(s.requests.keys().next().value!);
-      if (e.data.target.kind !== 'steer') s.pendingModel = e.data.execution.model ?? null;
+      if (e.data.target.kind !== 'steer') s.pendingExecution = execution;
       continue;
     }
     if ('providerThreadId' in d && d.providerThreadId) {
@@ -82,10 +84,10 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       rememberTurn(s, turnId, { root: !e.data.parentToolCallId, usage: null });
       if (e.data.parentToolCallId) continue;
       // A session snapshot alone cannot prove that its turn was a root turn.
-      const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || (s.usageTurnId === s.turn.id && !s.turn.badCounter)) ? s.usage.outputTokens : null;
-      s.turn = { id: turnId, start: e.createdAt, end: null, closed: false, model: s.pendingModel,
-        checkpointId: null, recoveredOutput: null, baseline, output: null, badCounter: false, textComplete: true, items: new Map() };
-      s.pendingModel = null;
+      const baseline = s.usage && s.usageTurnId && s.usageTurnId !== turnId && s.turns.get(s.usageTurnId)?.root === true && (!s.turn || (s.usageTurnId === s.turn.id && (!s.turn.badCounter || s.turn.sessionRestarted))) ? s.usage.outputTokens : null;
+      s.turn = { id: turnId, start: e.createdAt, end: null, closed: false, model: s.pendingExecution?.model ?? null, reasoningLevel: s.pendingExecution?.reasoningLevel ?? null, serviceTier: s.pendingExecution?.serviceTier ?? null,
+        checkpointId: null, recoveredOutput: null, baseline, output: null, turnDelta: null, sessionRestarted: false, badCounter: false, textComplete: true, items: new Map() };
+      s.pendingExecution = null;
       continue;
     }
     const t = s.turn;
@@ -104,13 +106,24 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       const record = s.turns.get(turnId);
       if (!e.data.providerThreadId || record?.root === false) continue;
       const u = parseUsage(e.data.tokenUsage?.total);
+      const last = parseUsage(e.data.tokenUsage?.last);
       // A repeated prior-turn snapshot is not a new measurement of the current session.
       if (!owns && equalUsage(record?.usage ?? null, u)) continue;
       if (t) {
         if (!owns) t.badCounter = true; // late changed counters make its pre-turn baseline ambiguous
         else {
-          if (!u || (s.usage && regresses(s.usage, u)) || (record?.usage && regresses(record.usage, u))) t.badCounter = true;
+          const previousOutput = t.output;
+          const sameTurnRegress = Boolean(record?.usage && u && regresses(record.usage, u));
+          const sessionRegress = Boolean(s.usage && u && regresses(s.usage, u));
+          if (!u || sameTurnRegress || sessionRegress) t.badCounter = true;
           t.output = u?.outputTokens ?? null;
+          // Hermes last is the bridge delta. A resume baseline is not emitted, so the total gap includes another turn.
+          const turnDelta = u && last && last.outputTokens < u.outputTokens && !sameTurnRegress ? last.outputTokens : null;
+          if (!u || sameTurnRegress) t.turnDelta = null;
+          else if (turnDelta != null && (previousOutput == null || previousOutput !== u.outputTokens)) {
+            t.turnDelta = t.turnDelta == null || previousOutput == null ? turnDelta : t.turnDelta + turnDelta;
+            if (sessionRegress) t.sessionRestarted = true;
+          }
         }
       }
       rememberTurn(s, turnId, { root: record?.root ?? null, usage: u });
@@ -121,7 +134,10 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
     if (!t || !owns) continue;
     // Terminal time stays frozen, but authoritative complete text may arrive later.
     if (t.closed && e.type !== 'item/completed') continue;
-    if (e.type === 'turn/input/accepted') t.model = s.requests.get(e.data.clientRequestId) ?? t.model;
+    if (e.type === 'turn/input/accepted') {
+      const execution = s.requests.get(e.data.clientRequestId);
+      if (execution) Object.assign(t, execution);
+    }
     if (e.type === 'provider/modelFallback') t.model = e.data.fallbackModel;
     if (e.type === 'turn/completed' || (e.type === 'provider/error' && !e.data.willRetry) || e.type === 'system/error') {
       t.closed = true; t.end = e.createdAt;
@@ -152,14 +168,16 @@ export function metricView(s: Metrics, provider: string, active: boolean, now: n
   const seconds = t && end != null && Number.isFinite(t.start) && end >= t.start ? (end - t.start) / 1000 : null;
   const elapsed = seconds != null && Number.isFinite(seconds) ? seconds : null;
   let numerator: number | null = null;
-  if (t && provider === 'codex' && !t.badCounter && t.baseline != null && t.output != null && t.output >= t.baseline) numerator = t.output - t.baseline;
+  if (provider === 'acp-hermes-agent' && t && t.turnDelta != null && (!t.badCounter || t.sessionRestarted)) numerator = t.turnDelta;
+  else if (t && !t.badCounter && t.baseline != null && t.output != null && t.output >= t.baseline) numerator = t.output - t.baseline;
   if (t?.closed && provider === 'codex' && numerator === null && t.recoveredOutput != null) numerator = t.recoveredOutput;
-  if (t && provider === 'acp-cursor' && t.textComplete && [...t.items.values()].every(i => i.complete || i.started)) {
+  const speedUnit = provider === 'acp-cursor' && s.usage === null ? 'симв/с' : 'ток/с';
+  if (t && speedUnit === 'симв/с' && t.textComplete && [...t.items.values()].every(i => i.complete || i.started)) {
     numerator = [...t.items.values()].reduce((n, i) => n + i.count + (i.tail ? 1 : 0), 0);
   }
   const speed = elapsed != null && elapsed > 0 && numerator != null ? numerator / elapsed : null;
-  return { elapsed, speed: speed != null && Number.isFinite(speed) ? speed : null,
+  return { elapsed, speedUnit, speed: speed != null && Number.isFinite(speed) ? speed : null,
     total: s.usage ? s.usage.inputTokens + s.usage.outputTokens : null,
     cache: s.usage && s.usage.inputTokens > 0 ? s.usage.cachedInputTokens / s.usage.inputTokens * 100 : null,
-    context: validContext(s.context), model: t?.model ?? null };
+    context: validContext(s.context), model: t?.model ?? null, reasoningLevel: t?.reasoningLevel ?? null, serviceTier: t?.serviceTier ?? null };
 }

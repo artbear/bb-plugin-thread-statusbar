@@ -27,7 +27,7 @@ it('rejects client paths, hosts and sessions at the RPC boundary', async () => {
   for (const field of ['path', 'hostId', 'sessionId']) await expect(f.harness.behavior.callRpc('completedOutput', { threadId: 'A', turnId: 'root', [field]: 'untrusted' })).rejects.toThrow();
   expect(f.callHost).not.toHaveBeenCalled(); await f.harness.lifecycle.dispose();
 });
-it.each(['acp-cursor', 'other'])('never recovers %s or defaults an unknown host to server', async provider => {
+it.each(['acp-cursor', 'acp-hermes-agent', 'other'])('never recovers %s or defaults an unknown host to server', async provider => {
   const f = await setup(provider);
   expect(await f.harness.behavior.callRpc('completedOutput', { threadId: 'A', turnId: 'root' })).toBeNull();
   expect(f.callHost).not.toHaveBeenCalled(); await f.harness.lifecycle.dispose();

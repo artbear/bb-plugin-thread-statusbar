@@ -149,3 +149,42 @@ it('does not reuse a late regressing counter as next-turn baseline, then recover
   expect(metricView(recovered, 'codex', false, 999999)).toMatchObject({ elapsed: 10, speed: 6, total: 1260 });
   expect(invalid.turn?.badCounter).toBe(true);
 });
+
+it.each(['codex', 'acp-cursor', 'acp-hermes-agent'])('uses official output and token units for %s', provider => {
+  const rows = [...baseline, start(4, 'root', 10000), usage(5, 160), event(6, 'item/completed', { item: { type: 'agentMessage', id: 'm', text: 'unrelated text' } }), event(7, 'turn/completed', {}, 'root', 20000)];
+  expect(view(rows, provider)).toMatchObject({ speed: 6, speedUnit: 'ток/с', total: 1160, cache: 40 });
+});
+it('never estimates Hermes output from visible characters without usage or baseline', () => {
+  const rows = [start(1), event(2, 'item/completed', { item: { type: 'agentMessage', id: 'm', text: 'А🙂Б' } }), event(4, 'turn/completed', {}, 'root', 3000)];
+  expect(view(rows, 'acp-hermes-agent')).toMatchObject({ speed: null, speedUnit: 'ток/с' });
+  expect(view([start(1), usage(2, 160), event(3, 'turn/completed', {}, 'root', 3000)], 'acp-hermes-agent').speed).toBeNull();
+  expect(view(rows, 'acp-cursor')).toMatchObject({ speed: 1.5, speedUnit: 'симв/с' });
+});
+function hermesUsage(seq: number, output: number, lastOutput: number, turn = 'root', time = seq * 1000) {
+  const total = { inputTokens: 1000, outputTokens: output, cachedInputTokens: 400, reasoningOutputTokens: 0, totalTokens: 1000 + output };
+  const last = { inputTokens: 10, outputTokens: lastOutput, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 10 + lastOutput };
+  return event(seq, 'thread/tokenUsage/updated', { tokenUsage: { total, last, modelContextWindow: null } }, turn, time);
+}
+it('counts Hermes speed from last when resume omits the baseline snapshot', () => {
+  const rows = [...baseline, start(4, 'silent', 10000), event(5, 'turn/completed', {}, 'silent', 20000), start(6, 'next', 30000), hermesUsage(7, 160, 20, 'next', 30000), event(8, 'turn/completed', {}, 'next', 40000)];
+  expect(view(rows, 'acp-hermes-agent')).toMatchObject({ elapsed: 10, speed: 2, total: 1160 });
+  const again = [...rows, start(9, 'later', 50000), hermesUsage(10, 180, 20, 'later', 50000), event(11, 'turn/completed', {}, 'later', 60000)];
+  expect(view(again, 'acp-hermes-agent')).toMatchObject({ elapsed: 10, speed: 2, total: 1180 });
+});
+it('keeps Hermes speed when a new process lowers the session total', () => {
+  const rows = [...baseline, start(4, 'next', 10000), hermesUsage(5, 50, 20, 'next', 10000), event(6, 'turn/completed', {}, 'next', 20000)];
+  expect(view(rows, 'acp-hermes-agent')).toMatchObject({ elapsed: 10, speed: 2, total: 1050 });
+  expect(view(rows, 'codex').speed).toBeNull();
+  const next = [...rows, start(7, 'after', 30000), hermesUsage(8, 70, 20, 'after', 30000), event(9, 'turn/completed', {}, 'after', 40000)];
+  expect(view(next, 'acp-hermes-agent')).toMatchObject({ elapsed: 10, speed: 2, total: 1070 });
+});
+it('binds reasoning and service tier to accepted execution, while fallback replaces only the model', () => {
+  const rows = [
+    event(1, 'client/turn/requested', { requestId: 'r1', target: { kind: 'thread-start' }, execution: { model: 'A', reasoningLevel: 'high', serviceTier: 'fast' } }, null),
+    event(2, 'thread/identity', {}, null), start(3), event(4, 'turn/input/accepted', { clientRequestId: 'r1' }),
+    event(5, 'provider/modelFallback', { fallbackModel: 'B' }),
+    event(6, 'client/turn/requested', { requestId: 'r2', target: { kind: 'new-turn' }, execution: { model: 'C', reasoningLevel: 'low', serviceTier: 'default' } }, null),
+  ];
+  expect(view(rows)).toMatchObject({ model: 'B', reasoningLevel: 'high', serviceTier: 'fast' });
+  expect(view([...rows, event(7, 'turn/completed'), start(8, 'next'), event(9, 'turn/input/accepted', { clientRequestId: 'r2' }, 'next')])).toMatchObject({ model: 'C', reasoningLevel: 'low', serviceTier: 'default' });
+});

@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-thread-statusbar",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "engines": {
     "bb": ">=0.48",
@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Thread Statusbar",
-    "description": "Штатная строка метрик ходов Codex и Cursor в BB",
+    "description": "Штатная строка метрик ходов Codex, Cursor и Hermes в BB",
     "branding": {
       "icon": "Gauge"
     },
@@ -32,7 +32,7 @@
     "typescript": "^5.7.0",
     "vitest": "^5.0.5"
   },
-  "description": "Штатная строка метрик ходов Codex и Cursor в BB",
+  "description": "Штатная строка метрик ходов Codex, Cursor и Hermes в BB",
   "license": "MIT",
   "author": "artbear",
   "scripts": {

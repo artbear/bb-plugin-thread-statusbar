@@ -2,7 +2,7 @@ import type { Recovered } from './recovery-contract';
 import { initialMetrics, reduceEvents, validContext, type Metrics } from './metrics';
 import { EVENT_TYPES, type EventRow, type Sdk, type Thread } from './sdk-types';
 export type Observation = { phase: 'loading' | 'ready' | 'unavailable'; thread: Thread | null; metrics: Metrics };
-export const supports = (id: string) => id === 'codex' || id === 'acp-cursor';
+export const supports = (id: string) => id === 'codex' || id === 'acp-cursor' || id === 'acp-hermes-agent';
 export const HISTORY_LIMIT = 2000;
 /** One read cycle at a time; invalidations are hints, never event payloads. */
 export function observeThread(sdk: Sdk, threadId: string, publish: (s: Observation) => void, recover?: (input: { threadId: string; turnId: string }) => Promise<Recovered | null>) {
