@@ -188,6 +188,25 @@ it('keeps Hermes speed when a new process lowers the session total', () => {
   const next = [...rows, start(7, 'after', 30000), hermesUsage(8, 70, 20, 'after', 30000), event(9, 'turn/completed', {}, 'after', 40000)];
   expect(view(next, 'acp-hermes-agent')).toMatchObject({ elapsed: 10, speed: 2, total: 1070 });
 });
+it('counts completed context compactions once, across clear and a new provider session', () => {
+  const item = (seq: number, id: string, turn = 'root') => event(seq, 'item/completed', { item: { type: 'contextCompaction', id } }, turn);
+  const first = item(1, 'c1');
+  expect(view([first]).compactions).toBe(1);
+  expect(view([event(1, 'item/started', { item: { type: 'contextCompaction', id: 'c1' } })]).compactions).toBe(0);
+  expect(view([first, { ...first, seq: 2 }]).compactions).toBe(1);
+  expect(view([item(1, 'c1', 'child'), item(2, 'c2')]).compactions).toBe(2);
+  expect(view([event(1, 'thread/compacted', {}, 'root'), item(2, 'c1')]).compactions).toBe(1);
+  expect(view([item(1, 'c1'), event(2, 'thread/compacted', {}, 'root')]).compactions).toBe(1);
+  expect(view([event(1, 'thread/compacted', {}, 'a'), event(2, 'thread/compacted', {}, 'b')]).compactions).toBe(2);
+  const cleared = [...baseline, item(4, 'c1', 'prior'), event(5, 'thread/context/cleared', {}, 'prior'), item(6, 'c2', 'next')];
+  expect(view(cleared)).toMatchObject({ total: null, compactions: 2 });
+  const identity = [item(1, 'c1'), event(2, 'thread/identity', { providerThreadId: 'new' }, null), event(3, 'item/completed', { providerThreadId: 'new', item: { type: 'contextCompaction', id: 'c2' } })];
+  expect(view(identity).compactions).toBe(2);
+  const unknown = initialMetrics('A');
+  unknown.compactionsKnown = false;
+  expect(metricView(reduceEvents(unknown, [item(1, 'c1')]), 'codex', false, 0).compactions).toBeNull();
+});
+
 it('binds reasoning and service tier to accepted execution, while fallback replaces only the model', () => {
   const rows = [
     event(1, 'client/turn/requested', { requestId: 'r1', target: { kind: 'thread-start' }, execution: { model: 'A', reasoningLevel: 'high', serviceTier: 'fast' } }, null),

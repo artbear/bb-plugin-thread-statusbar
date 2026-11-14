@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeSdk, makeThreadResponse } from '@get-bb/plugin-sdk/testing';
-import { HISTORY_LIMIT, observeThread, type Observation } from '../observe-thread';
+import { COMPACTION_PAGES, HISTORY_LIMIT, observeThread, type Observation } from '../observe-thread';
 import type { EventRow, Sdk } from '../sdk-types';
 import { event, start, usage } from './fixtures';
 function fake(rows: EventRow[] = []) {
@@ -9,7 +9,7 @@ function fake(rows: EventRow[] = []) {
   let connection: ((state: 'connected' | 'disconnected') => void) | undefined;
   const unsubscribe = vi.fn();
   const get = vi.fn(async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, providerId: 'codex', status: 'active' }));
-  const list = vi.fn(async (args: { beforeSeq?: string; afterSeq?: string; order?: string; limit?: string }) => {
+  const list = vi.fn(async (args: { beforeSeq?: string; afterSeq?: string; order?: string; limit?: string; types?: readonly string[] }) => {
     expect(args.limit).toBe('100');
     const filtered = rows.filter(e => (args.beforeSeq == null || e.seq < +args.beforeSeq) && (args.afterSeq == null || e.seq > +args.afterSeq));
     return (args.order === 'desc' ? [...filtered].reverse() : filtered).slice(0, 100);
@@ -44,12 +44,29 @@ describe('bounded SDK observation', () => {
     expect(f.list.mock.calls.at(-1)?.[0].afterSeq).toBe('207');
     stop(); expect(f.unsubscribe).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
   });
+  it('counts a compaction older than the metric window', async () => {
+    const old = event(1, 'item/completed', { item: { type: 'contextCompaction', id: 'c-old' } });
+    const rows = [old, ...Array.from({ length: HISTORY_LIMIT }, (_, i) => usage(i + 2, 100))];
+    const f = fake(rows), states: Observation[] = [];
+    const stop = observeThread(f.sdk, 'A', s => states.push(s)); await settle();
+    expect(states.at(-1)?.metrics.compactionsKnown).toBe(true);
+    expect(states.at(-1)?.metrics.ledger.items).toBe(1);
+    expect(f.list.mock.calls.length).toBeGreaterThan(HISTORY_LIMIT / 100);
+    stop();
+  });
+  it('leaves the compaction count unknown when the census itself is truncated', async () => {
+    const rows = Array.from({ length: COMPACTION_PAGES * 100 }, (_, i) => event(i + 1, 'item/completed', { item: { type: 'agentMessage', id: `m${i}`, text: '' } }));
+    const f = fake(rows), states: Observation[] = [];
+    const stop = observeThread(f.sdk, 'A', s => states.push(s)); await settle();
+    expect(states.at(-1)?.metrics.compactionsKnown).toBe(false);
+    stop();
+  });
   it('bounds backfill and keeps missing starts unknown', async () => {
     const rows = Array.from({ length: HISTORY_LIMIT + 10 }, (_, i) => usage(i + 1, i + 1));
     const f = fake(rows), states: Observation[] = [];
     const stop = observeThread(f.sdk, 'A', s => states.push(s)); await settle();
-    expect(f.list).toHaveBeenCalledTimes(20);
-    expect(states.at(-1)).toMatchObject({ phase: 'ready', metrics: { turn: null, usage: { inputTokens: 1000, outputTokens: HISTORY_LIMIT + 10, cachedInputTokens: 400 } } });
+    expect(f.list.mock.calls.filter(call => call[0].types?.length !== 2)).toHaveLength(20);
+    expect(states.at(-1)).toMatchObject({ phase: 'ready', metrics: { turn: null, compactionsKnown: true, usage: { inputTokens: 1000, outputTokens: HISTORY_LIMIT + 10, cachedInputTokens: 400 } } });
     stop();
   });
   it('marks failed reads unavailable, rereads on reconnect and clears after rewrite', async () => {

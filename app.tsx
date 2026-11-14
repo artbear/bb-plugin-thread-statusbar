@@ -31,6 +31,7 @@ export function Summary(props: ExperimentalThreadContextSegmentProps) {
     {metric('elapsed', duration(ready ? v.elapsed : null))}
     {metric('speed', `${v.speedUnit === 'ток/с' ? 'сред. ' : ''}${number(ready ? v.speed : null)} ${v.speedUnit}`)}
     {metric('total', `Всего ${number(ready ? v.total : null)} ток`)}
+    {metric('compactions', `компакт. ${number(ready ? v.compactions : null)}`)}
     {metric('cache', `Кеш ${ready && v.cache != null ? number(v.cache) + '%' : '—'}`)}
     {metric('context', `Контекст ${ready && v.context ? `${v.context.estimated ? '≈' : ''}${number(v.context.usedTokens)}/${number(v.context.modelContextWindow)}` : '—'}`)}
   </button>;
@@ -43,6 +44,7 @@ export function Details({ isExpanded }: ExperimentalThreadContextSegmentProps) {
     <p>Hermes: официальный usage — итог сессии процесса, не монотонный итог треда. После рестарта Hermes total может стать меньше. Первый снимок после resume не считается расходом хода. Скорость — сумма last этого хода, без невидимого baseline resume. Без usage или достоверного baseline скорость неизвестна. Кеш уже входит в input, thought не прибавляется к output. Native rollout читает только Codex.</p>
     <p>Cursor: без официального снимка скорость считается в символах видимого ответа. Первый снимок, где last равен total и baseline ещё нет, даёт ток/с этого хода. Со второго хода скорость — прирост накопленного output. Символы не подставляются, когда снимок уже есть.</p>
     <p>Всего: input + output последнего официального снимка сессии. Кеш: cached input / input. Контекст измеряется провайдером отдельно, ≈ означает оценку. «—» означает отсутствие достоверных данных, начала хода, полного текста или baseline; после ошибки чтения метрики скрыты до успешной сверки.</p>
+    <p>Компакт.: число завершённых сжатий контекста в этом треде. Считается завершённый элемент contextCompaction. Событие thread/compacted добавляется, только если в том же ходе такого элемента не было. Очистка контекста и новая сессия провайдера число не обнуляют. «—» означает, что полная история треда не подтверждена.</p>
   </div>;
 }
 export default definePluginApp(app => {

@@ -10,12 +10,16 @@ export type Turn = {
   baseline: number | null; output: number | null; lastOutput: number | null; turnDelta: number | null; sessionRestarted: boolean; badCounter: boolean; textComplete: boolean;
   items: Map<string, TextItem>;
 };
+/** Completed contextCompaction items, plus thread/compacted events on turns that never completed such an item. */
+export type CompactionLedger = { items: number; loose: Map<string, number>; itemTurns: Set<string> };
 export type Metrics = {
   threadId: string; seq: number; session: string | null; usage: Usage | null;
   usageTurnId: string | null; turns: Map<string, TurnRecord>;
   context: Context; turn: Turn | null; pendingExecution: Execution | null; seenIds: Set<string>; requests: Map<string, Execution>;
+  compactionsKnown: boolean; ledger: CompactionLedger;
 };
-export const initialMetrics = (threadId: string): Metrics => ({ threadId, seq: -1, session: null, usage: null, usageTurnId: null, turns: new Map(), context: null, turn: null, pendingExecution: null, seenIds: new Set(), requests: new Map() });
+const emptyLedger = (): CompactionLedger => ({ items: 0, loose: new Map(), itemTurns: new Set() });
+export const initialMetrics = (threadId: string): Metrics => ({ threadId, seq: -1, session: null, usage: null, usageTurnId: null, turns: new Map(), context: null, turn: null, pendingExecution: null, seenIds: new Set(), requests: new Map(), compactionsKnown: true, ledger: emptyLedger() });
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const counter = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
 /** Validate JSON counters at the SDK boundary; retain only fields used by our formulas. */
@@ -36,7 +40,22 @@ export function validContext(c: Context): Context {
   return c && nonnegative(c.usedTokens) && nonnegative(c.modelContextWindow) && c.modelContextWindow > 0 ? c : null;
 }
 function clear(s: Metrics, session = s.session) {
-  Object.assign(s, initialMetrics(s.threadId), { seq: s.seq, session, seenIds: s.seenIds });
+  const { compactionsKnown, ledger } = s;
+  Object.assign(s, initialMetrics(s.threadId), { seq: s.seq, session, seenIds: s.seenIds, compactionsKnown, ledger });
+}
+function turnKey(turnId: string | null) { return turnId ?? ''; }
+function recordThreadCompacted(s: Metrics, turnId: string | null) {
+  if (!s.compactionsKnown) return;
+  const key = turnKey(turnId);
+  if (s.ledger.itemTurns.has(key)) return;
+  s.ledger.loose.set(key, (s.ledger.loose.get(key) ?? 0) + 1);
+}
+function recordCompactionItem(s: Metrics, turnId: string | null) {
+  if (!s.compactionsKnown) return;
+  const key = turnKey(turnId);
+  s.ledger.items += 1;
+  s.ledger.itemTurns.add(key);
+  s.ledger.loose.delete(key);
 }
 // Streaming chunks can split surrogate pairs; retain only a trailing high surrogate.
 function appendText(item: TextItem, delta: string): TextItem {
@@ -47,7 +66,7 @@ function appendText(item: TextItem, delta: string): TextItem {
 }
 /** Deterministic reduction. Only accepted root turns establish metric ownership. */
 export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metrics {
-  const s: Metrics = { ...previous, seenIds: new Set(previous.seenIds), requests: new Map(previous.requests), turns: new Map(previous.turns), turn: previous.turn && { ...previous.turn, items: new Map(previous.turn.items) } };
+  const s: Metrics = { ...previous, seenIds: new Set(previous.seenIds), requests: new Map(previous.requests), turns: new Map(previous.turns), ledger: { items: previous.ledger.items, loose: new Map(previous.ledger.loose), itemTurns: new Set(previous.ledger.itemTurns) }, turn: previous.turn && { ...previous.turn, items: new Map(previous.turn.items) } };
   for (const e of [...rows].sort((a, b) => a.seq - b.seq)) {
     if (e.threadId !== s.threadId || !Number.isFinite(e.seq) || e.seq <= s.seq) continue;
     s.seq = e.seq;
@@ -76,6 +95,8 @@ export function reduceEvents(previous: Metrics, rows: readonly EventRow[]): Metr
       if (s.session === null) s.session = d.providerThreadId;
       if (d.providerThreadId !== s.session) continue;
     }
+    if (e.type === 'thread/compacted') recordThreadCompacted(s, turnId);
+    if (e.type === 'item/completed' && e.data.item.type === 'contextCompaction') recordCompactionItem(s, turnId);
     if (e.type === 'thread/context/cleared' || e.type === 'thread/compacted') {
       if (!s.turn || turnId === null || turnId === s.turn.id) clear(s);
       continue;
@@ -181,5 +202,6 @@ export function metricView(s: Metrics, provider: string, active: boolean, now: n
   return { elapsed, speedUnit, speed: speed != null && Number.isFinite(speed) ? speed : null,
     total: s.usage ? s.usage.inputTokens + s.usage.outputTokens : null,
     cache: s.usage && s.usage.inputTokens > 0 ? s.usage.cachedInputTokens / s.usage.inputTokens * 100 : null,
-    context: validContext(s.context), model: t?.model ?? null, reasoningLevel: t?.reasoningLevel ?? null, serviceTier: t?.serviceTier ?? null };
+    context: validContext(s.context), model: t?.model ?? null, reasoningLevel: t?.reasoningLevel ?? null, serviceTier: t?.serviceTier ?? null,
+    compactions: s.compactionsKnown ? s.ledger.items + [...s.ledger.loose.values()].reduce((n, v) => n + v, 0) : null };
 }

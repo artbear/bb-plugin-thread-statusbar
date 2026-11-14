@@ -4,6 +4,9 @@ import { EVENT_TYPES, type EventRow, type Sdk, type Thread } from './sdk-types';
 export type Observation = { phase: 'loading' | 'ready' | 'unavailable'; thread: Thread | null; metrics: Metrics };
 export const supports = (id: string) => id === 'codex' || id === 'acp-cursor' || id === 'acp-hermes-agent';
 export const HISTORY_LIMIT = 2000;
+/** item/completed cannot be filtered by kind, so a full compaction count pages this many times before becoming unknown. */
+export const COMPACTION_PAGES = 120;
+const COMPACTION_TYPES = ['item/completed', 'thread/compacted'] as const;
 /** One read cycle at a time; invalidations are hints, never event payloads. */
 export function observeThread(sdk: Sdk, threadId: string, publish: (s: Observation) => void, recover?: (input: { threadId: string; turnId: string }) => Promise<Recovered | null>) {
   let state: Observation = { phase: 'loading', thread: null, metrics: initialMetrics(threadId) };
@@ -20,23 +23,23 @@ export function observeThread(sdk: Sdk, threadId: string, publish: (s: Observati
     dirty = true;
     if (!stopped && online && !busy && timer === undefined) timer = setTimeout(() => { timer = undefined; void read(); }, 250);
   }
-  async function pages(signal: AbortSignal, replay: boolean, after: number): Promise<EventRow[]> {
+  async function pages(signal: AbortSignal, replay: boolean, after: number, types: readonly [EventRow['type'], ...EventRow['type'][]] = EVENT_TYPES, maxPages = HISTORY_LIMIT / 100): Promise<{ rows: EventRow[]; truncated: boolean }> {
     const rows: EventRow[] = [];
     let cursor = replay ? undefined : after;
-    for (let p = 0; p < HISTORY_LIMIT / 100; p++) {
-      const page = await sdk.threads.events.list({ threadId, types: EVENT_TYPES, order: replay ? 'desc' : 'asc', limit: '100', signal,
+    for (let p = 0; p < maxPages; p++) {
+      const page = await sdk.threads.events.list({ threadId, types, order: replay ? 'desc' : 'asc', limit: '100', signal,
         ...(cursor === undefined ? {} : replay ? { beforeSeq: String(cursor) } : { afterSeq: String(cursor) }) });
       if (page.some(e => e.threadId !== threadId || !Number.isFinite(e.seq))) throw new Error('Invalid event scope');
       const unique = page.filter(e => cursor === undefined || (replay ? e.seq < cursor : e.seq > cursor));
       if (page.length && !unique.length) throw new Error('Event cursor did not advance');
       rows.push(...unique);
-      if (page.length < 100) return rows;
+      if (page.length < 100) return { rows, truncated: false };
       cursor = replay ? Math.min(...unique.map(e => e.seq)) : Math.max(...unique.map(e => e.seq));
     }
     // A bounded suffix is safe for replay: missing starts/baselines remain unknown.
     // Incremental overflow must resync rather than show a partial current view.
     if (!replay) throw new Error('Incremental history limit');
-    return rows;
+    return { rows, truncated: true };
   }
   async function read() {
     if (stopped || busy || !online) return;
@@ -52,11 +55,18 @@ export function observeThread(sdk: Sdk, threadId: string, publish: (s: Observati
       if (!state.thread || providerChanged) { state = { phase: 'loading', thread, metrics: initialMetrics(threadId) }; emit(); }
       if (providerChanged) { attempted = null; recovered = null; }
       const reset = replay || providerChanged;
-      const rows = supports(thread.providerId) ? await pages(abort.signal, reset, state.metrics.seq) : [];
+      const history = supports(thread.providerId) ? await pages(abort.signal, reset, state.metrics.seq) : { rows: [], truncated: false };
+      const rows = history.rows;
       // Read context after history, so a concurrently recorded clear cannot restore an older measurement.
       const context = supports(thread.providerId) ? await sdk.threads.context({ threadId, signal: abort.signal }) : { usage: null };
       if (stopped || version !== epoch || abort.signal.aborted) return;
       const metrics = reduceEvents(reset ? initialMetrics(threadId) : state.metrics, rows);
+      if (reset && history.truncated) {
+        const census = await pages(abort.signal, true, 0, COMPACTION_TYPES, COMPACTION_PAGES);
+        if (stopped || version !== epoch || abort.signal.aborted) return;
+        if (census.truncated) metrics.compactionsKnown = false;
+        else metrics.ledger = reduceEvents(initialMetrics(threadId), census.rows).ledger;
+      }
       // context() is authoritative, including a null measurement after a clear.
       metrics.context = context.usage?.snapshot && metrics.session !== context.usage.snapshot.providerSessionId ? null : validContext(context.usage);
       const turn = metrics.turn;

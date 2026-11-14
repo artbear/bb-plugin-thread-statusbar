@@ -28,10 +28,22 @@ it.each(['codex', 'acp-cursor', 'acp-hermes-agent'])('renders readable %s metric
   } } });
   await slot.findByText(providerId === 'codex' ? 'Codex' : providerId === 'acp-cursor' ? 'Cursor' : 'Hermes');
   await slot.findByText('00:02');
+  expect(slot.getByText('компакт. 0')).toBeDefined();
   expect(slot.container.querySelector('[data-thread-statusbar="A"] [data-metric="context"]')?.textContent).toContain('≈0/1');
   fireEvent.click(slot.getByRole('button'));
   expect(props.onToggle).toHaveBeenCalled();
   act(() => slot.lifecycle.unmount()); expect(stop).toHaveBeenCalledTimes(2);
+});
+it('shows the completed compaction count between session total and cache', async () => {
+  const rows = [1, 2, 3].map(n => event(n, 'item/completed', { item: { type: 'contextCompaction', id: `c${n}` } }));
+  const slot = renderSlot({ component: Summary }, props, { sdk: { subscribe: () => () => {}, threads: {
+    get: async () => makeThreadResponse({ id: 'A', providerId: 'codex', status: 'idle' }), context: async () => ({ usage: null }), events: { list: async () => [...rows].reverse() },
+  } } });
+  await slot.findByText('компакт. 3');
+  const order = Array.from(slot.container.querySelectorAll('[data-metric]'), node => node.getAttribute('data-metric'));
+  expect(order.indexOf('compactions')).toBe(order.indexOf('total') + 1);
+  expect(order.indexOf('cache')).toBe(order.indexOf('compactions') + 1);
+  slot.lifecycle.unmount();
 });
 it('uses public SDK imports only', () => {
   const scan = experimental_scanPublicSdkOnly(process.cwd(), { allow: [/^react(?:\/.*)?$/, /^vitest(?:\/.*)?$/, /^@testing-library\/react$/] });
